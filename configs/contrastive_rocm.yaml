@@ -1,0 +1,116 @@
+# MI300X / ROCm phase config -- full contrastive run OR retrieval-only.
+#
+# PHASE PLAN
+# ----------
+# Phase 1 (MI300X, parallel to A100 classical):
+#   for LOSS in imbalance_supcon balanced_supcon supcon; do
+#     python scripts/run_loso_contrastive.py --config configs/contrastive_rocm.yaml \
+#         --data-dir /data \
+#         --set loss.name=$LOSS --set name=contrastive_${LOSS}
+#   done
+#
+# Phase 2 (MI300X, after A100 embeddings arrive via rsync):
+#   for LOSS in imbalance_supcon balanced_supcon supcon; do
+#     python scripts/run_retrieval_eval.py --config configs/retrieval.yaml \
+#         --data-dir /data \
+#         --embeddings-dir outputs/contrastive_${LOSS}/embeddings
+#   done
+#
+# Phase 3 (MI300X, CPU-bound, big RAM):
+#   python scripts/run_quantum_retrieval_subset.py --config configs/quantum_subset.yaml \
+#       --data-dir /data \
+#       --embeddings-dir outputs/contrastive_imbalance_supcon/embeddings
+#   python scripts/analyze_neighbors.py \
+#       --metrics-dir outputs/contrastive_imbalance_supcon/metrics
+#   python scripts/analyze_statistics.py \
+#       --csv outputs/classical/stats/per_fold_metrics.csv \
+#       --csv outputs/contrastive_imbalance_supcon/stats/per_fold_metrics.csv \
+#       --metric auc_pr --out outputs/stats/auc_pr_significance.json
+#
+# Why ROCm is fine here:
+#   PyTorch ROCm (HIP) runs the encoder training correctly; torch.cuda.is_available()
+#   is True on MI300X. 192 GB HBM3 supports batch_size=2048 and the full
+#   embedding bank (~23 subjects) with room to spare. FAISS CPU handles retrieval
+#   (faiss-gpu is CUDA-only).
+
+name: contrastive_imbalance_supcon
+output_dir: outputs
+seeds: [0, 1, 2]
+
+data:
+  features_dir: ""        # pass --data-dir
+  subject_regex: "^(chb\\d+)"
+  window_size_sec: 2.0
+  step_size_sec: 1.0
+  sampling_rate_hz: 256
+
+preprocessing:
+  scaler: standard
+  use_pca: false
+  impute_nonfinite: true
+
+augmentation:
+  enabled: true
+  gaussian_noise_std: 0.05
+  gaussian_noise_p: 0.5
+  amplitude_scale_delta: 0.1
+  amplitude_scale_p: 0.5
+  channel_dropout_max: 4
+  channel_dropout_p: 0.5
+  freq_masking_bands_max: 1
+  freq_masking_p: 0.3
+  temporal_mask_max_frac: 0.2
+  temporal_mask_p: 0.3
+  n_views: 2
+
+encoder:
+  arch: cnn1d
+  embedding_dim: 128
+  hidden_dims: [256, 256]
+  conv_channels: [64, 128, 128]
+  kernel_size: 3
+  projection_dim: 64
+  projection_hidden: 128
+  dropout: 0.1
+  sequence_len: 1
+
+loss:
+  name: imbalance_supcon
+  temperature: 0.1
+  base_temperature: 0.1
+  minority_class: 1
+  minority_weight: 0.0
+  focal_gamma: 2.0
+  use_focal_weighting: true
+
+training:
+  epochs: 50
+  batch_size: 2048          # 192 GB HBM3 -- big batches help contrastive loss
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: adamw
+  scheduler: cosine
+  grad_clip: 5.0
+  num_workers: 8
+  pin_memory: false         # pin_memory has no effect on ROCm; set false to avoid warning
+  amp: true
+  amp_dtype: bfloat16       # ROCm >= 6.0 on MI300X supports native BF16
+                            # if you see dtype errors, fall back to: amp_dtype: float16
+  device: auto              # ROCm masquerades as cuda; auto resolves correctly
+  balanced_sampler: true
+  min_pos_per_batch: 16
+
+retrieval:
+  head: hybrid
+  topk_values: [1, 5, 10, 20, 50]
+  decision_k: 10
+  similarity: cosine
+  rbf_gamma: 1.0
+  hybrid_alpha: 0.5
+  backend: auto             # FAISS CPU on ROCm (faiss-gpu is CUDA-only)
+  normalize_embeddings: true
+  max_bank_per_class: null
+
+stats:
+  bootstrap_n: 2000
+  bootstrap_ci: 0.95

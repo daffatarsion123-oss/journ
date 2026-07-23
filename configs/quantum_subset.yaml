@@ -1,0 +1,42 @@
+# Exploratory quantum-kernel retrieval on a compressed, test-subject-free bank.
+# Run: python scripts/run_quantum_retrieval_subset.py --config configs/quantum_subset.yaml \
+#        --data-dir <parquet dir> --embeddings-dir outputs/<run>/embeddings
+#
+# Simulator only. Falls back to a classical RBF kernel (clearly labeled) if
+# neither pennylane nor qiskit is installed.
+name: quantum_subset
+output_dir: outputs
+seeds: [0]
+# folds_whitelist: [chb01, chb02]   # quantum is expensive; restrict folds
+
+data:
+  features_dir: ""        # TODO(dataset) or pass --data-dir
+  subject_regex: "^(chb\\d+)"
+  window_size_sec: 2.0
+  step_size_sec: 1.0
+  sampling_rate_hz: 256
+
+preprocessing:
+  scaler: standard
+  impute_nonfinite: true
+
+encoder:
+  arch: cnn1d
+  embedding_dim: 128
+  sequence_len: 1
+
+retrieval:
+  decision_k: 10
+  similarity: cosine
+  rbf_gamma: 1.0
+
+quantum:
+  enabled: true
+  backend: auto           # auto | pennylane | qiskit | none
+  n_qubits: 6
+  reps: 2
+  feature_map: zz         # zz | z | pauli
+  projection_dim: 6       # PCA target fed to the quantum feature map (<= n_qubits)
+  max_bank_per_class: 256 # compress the bank for the fidelity kernel
+  max_query: 512          # cap queries per fold
+  seed: 0

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eegrag"
+version = "0.1.0"
+description = "Retrieval-Augmented Cross-Subject EEG Learning for Seizure Detection"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=12.0",
+    "scipy>=1.11",
+    "scikit-learn>=1.3",
+    "pyyaml>=6.0",
+    "psutil>=5.9",   # peak-RAM sampling for compute-cost instrumentation
+]
+
+[project1211.optional-dependencies]
+# Deep learning (install the ROCm or CUDA build of torch separately to match
+# your accelerator -- see README).
+torch = ["torch>=2.1"]
+# Faster retrieval; optional (sklearn NearestNeighbors is the fallback).
+faiss = ["faiss-cpu>=1.7"]
+# GPU classical baselines (CUDA only; not available on ROCm/MI300X).
+gpu = ["xgboost>=2.0"]
+# Exploratory quantum kernel (simulator).
+quantum = ["pennylane>=0.34"]
+# Stats convenience (Nemenyi CD diagrams etc.). Core stats use scipy only.
+stats = ["scikit-posthocs>=0.9", "matplotlib>=3.7"]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"

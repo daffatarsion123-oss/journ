@@ -1,0 +1,77 @@
+# Three interchangeable services selected by profile. The code auto-detects the
+# backend, so the only real difference is the base image + device wiring.
+#
+#   ROCm (MI300X):  docker compose --profile rocm run --rm rocm
+#   CUDA:           docker compose --profile cuda run --rm cuda
+#   CPU (tests):    docker compose --profile cpu  run --rm cpu
+#
+# Data: set EEGRAG_DATA_DIR to the host directory holding *_features.parquet.
+# Defaults to the previous-paper outputs/ one level up from v2/.
+# Inside the container the parquets are at /data, results at /workspace/outputs.
+
+x-common: &common
+  working_dir: /workspace
+  shm_size: "8gb"            # headroom for DataLoader workers
+  volumes:
+    - .:/workspace                                   # live code + results
+    - ${EEGRAG_DATA_DIR:-../outputs}:/data:ro        # read-only feature parquets
+  environment:
+    - PYTHONUNBUFFERED=1
+    - PYTHONPATH=/workspace/src
+    - EEGRAG_DATA_DIR=/data
+
+services:
+  # --- AMD MI300X / ROCm (primary training platform) --------------------- #
+  rocm:
+    <<: *common
+    profiles: ["rocm"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.rocm
+      args:
+        ROCM_PYTORCH_TAG: ${ROCM_PYTORCH_TAG:-rocm6.2_ubuntu22.04_py3.10_pytorch_release-2.4.0}
+    image: eegrag:rocm
+    container_name: eegrag-rocm
+    # ROCm device passthrough.
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render
+    security_opt:
+      - seccomp:unconfined
+    ipc: host
+    cap_add:
+      - SYS_PTRACE
+
+  # --- NVIDIA CUDA ------------------------------------------------------- #
+  cuda:
+    <<: *common
+    profiles: ["cuda"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cuda
+    image: eegrag:cuda
+    container_name: eegrag-cuda
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/workspace/src
+      - EEGRAG_DATA_DIR=/data
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+  # --- CPU (portable smoke tests / CI) ----------------------------------- #
+  cpu:
+    <<: *common
+    profiles: ["cpu"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cpu
+    image: eegrag:cpu
+    container_name: eegrag-cpu

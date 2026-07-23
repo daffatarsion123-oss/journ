@@ -1,0 +1,33 @@
+# Outputs (keep the directory structure, ignore the artifacts)
+outputs/**/*.json
+outputs/**/*.csv
+outputs/**/*.npz
+outputs/**/*.parquet
+outputs/**/*.png
+outputs/**/*.yaml
+!outputs/**/.gitkeep
+ds/*
+
+# Caches
+**/.eegrag_cache/
+*.npz
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Envs
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+

@@ -1,0 +1,106 @@
+# A100 SXM phase config -- encoder training only (BF16 Tensor Cores).
+#
+# PHASE PLAN
+# ----------
+# Phase 1 (A100, run in parallel with MI300X phase 1):
+#   python scripts/run_loso_classical.py --config configs/classical.yaml \
+#       --data-dir /data
+#   # uses cuML SVC + XGBoost GPU-hist; sklearn SVC would take days on 23 subjects
+#
+# Phase 2 (A100, after classical finishes or in parallel):
+#   for LOSS in imbalance_supcon balanced_supcon supcon; do
+#     python scripts/run_loso_contrastive.py --config configs/contrastive_a100.yaml \
+#         --data-dir /data --train-only \
+#         --set loss.name=$LOSS --set name=contrastive_${LOSS}
+#   done
+#   # produces outputs/contrastive_*/embeddings/*.npz
+#
+# Then copy the embeddings to MI300X and run Phase 3 there:
+#   rsync -av outputs/contrastive_*/embeddings/ mi300x:/workspace/outputs/.../embeddings/
+#
+# Why BF16 on A100:
+#   A100 has native BF16 hardware support (no loss scaling needed, wider dynamic
+#   range than FP16). Combined with TF32-by-default matmuls and Tensor Cores,
+#   BF16 autocast gives ~10-20% throughput gain over FP16 on A100 SXM.
+
+name: contrastive_imbalance_supcon   # overridden per-ablation with --set name=
+output_dir: outputs
+seeds: [0, 1, 2]
+
+data:
+  features_dir: ""        # pass --data-dir
+  subject_regex: "^(chb\\d+)"
+  window_size_sec: 2.0
+  step_size_sec: 1.0
+  sampling_rate_hz: 256
+
+preprocessing:
+  scaler: standard
+  use_pca: false
+  impute_nonfinite: true
+
+augmentation:
+  enabled: true
+  gaussian_noise_std: 0.05
+  gaussian_noise_p: 0.5
+  amplitude_scale_delta: 0.1
+  amplitude_scale_p: 0.5
+  channel_dropout_max: 4
+  channel_dropout_p: 0.5
+  freq_masking_bands_max: 1
+  freq_masking_p: 0.3
+  temporal_mask_max_frac: 0.2
+  temporal_mask_p: 0.3
+  n_views: 2
+
+encoder:
+  arch: cnn1d
+  embedding_dim: 128
+  hidden_dims: [256, 256]
+  conv_channels: [64, 128, 128]
+  kernel_size: 3
+  projection_dim: 64
+  projection_hidden: 128
+  dropout: 0.1
+  sequence_len: 1
+
+loss:
+  name: imbalance_supcon   # override with --set loss.name=balanced_supcon etc.
+  temperature: 0.1
+  base_temperature: 0.1
+  minority_class: 1
+  minority_weight: 0.0
+  focal_gamma: 2.0
+  use_focal_weighting: true
+
+training:
+  epochs: 50
+  batch_size: 2048          # A100 80GB: double the batch vs MI300X default
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: adamw
+  scheduler: cosine
+  grad_clip: 5.0
+  num_workers: 8
+  pin_memory: true
+  amp: true
+  amp_dtype: bfloat16       # native A100 BF16 -- no GradScaler, no underflow risk
+  device: cuda              # explicit; auto would also work (ROCm masquerades as cuda)
+  balanced_sampler: true
+  min_pos_per_batch: 16
+
+# Retrieval config is used by run_retrieval_eval.py on MI300X after embedding transfer.
+retrieval:
+  head: hybrid
+  topk_values: [1, 5, 10, 20, 50]
+  decision_k: 10
+  similarity: cosine
+  rbf_gamma: 1.0
+  hybrid_alpha: 0.5
+  backend: auto
+  normalize_embeddings: true
+  max_bank_per_class: null
+
+stats:
+  bootstrap_n: 2000
+  bootstrap_ci: 0.95

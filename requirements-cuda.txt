@@ -1,0 +1,48 @@
+# A100 SXM / CUDA 12.x full dependency list.
+# Install with:
+#   pip install -r requirements-cuda.txt
+#   pip install -e "." --no-deps   # install eegrag package itself (deps already here)
+#
+# Tested stack: CUDA 12.4 | cuML 24.x | PyTorch 2.4 | Python 3.10/3.11
+# ─────────────────────────────────────────────────────────────────────────────
+
+# PyTorch CUDA wheel (cu124 = CUDA 12.4; swap cu121 for CUDA 12.1 etc.)
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch>=2.4
+
+# RAPIDS cuML + cupy  (CUDA 12.x pip wheels via NVIDIA's index)
+--extra-index-url https://pypi.nvidia.com
+cuml-cu12>=24.4
+cupy-cuda12x>=13.0
+
+# ─── Core ─────────────────────────────────────────────────────────────────────
+numpy>=1.24
+pandas>=2.0
+pyarrow>=12.0
+scipy>=1.11
+scikit-learn>=1.3
+pyyaml>=6.0
+joblib>=1.3
+psutil>=5.9          # peak-RAM sampling for compute-cost instrumentation
+
+# ─── Retrieval index ──────────────────────────────────────────────────────────
+# faiss-gpu-cu12 gives GPU-accelerated IVF/flat indices on A100.
+# If the cu12 wheel is unavailable on your pip version, fall back to faiss-cpu:
+#   pip install faiss-cpu>=1.7
+faiss-gpu-cu12>=1.7
+
+# ─── Classical GPU accelerator ────────────────────────────────────────────────
+# XGBoost GPU hist (device='cuda'); cuML handles LR/SVM/RF.
+xgboost>=2.0
+
+# ─── Stats ────────────────────────────────────────────────────────────────────
+# scikit-posthocs: Nemenyi post-hoc table + CD diagrams.
+scikit-posthocs>=0.9
+matplotlib>=3.7
+
+# ─── Optional quantum kernel (simulator, CPU-only even when installed) ─────────
+pennylane>=0.34
+# pennylane-lightning-gpu  # CUDA-accelerated statevector -- only useful >20 qubits
+
+# ─── Dev / test ───────────────────────────────────────────────────────────────
+pytest>=7.4

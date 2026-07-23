@@ -1,0 +1,85 @@
+# LOSO contrastive representation learning + retrieval (main experiment).
+# Run: python scripts/run_loso_contrastive.py --config configs/contrastive.yaml --data-dir <parquet dir>
+#
+# Swap the contrastive objective via loss.name to run the ablation the reviewer
+# asked for:  imbalance_supcon (proposed)  vs  balanced_supcon (BCL baseline)
+# vs  supcon (standard)  vs  simclr (unsupervised sanity).
+name: contrastive_imbalance_supcon
+output_dir: outputs
+seeds: [0, 1, 2]
+# folds_whitelist: [chb01, chb02]
+
+data:
+  features_dir: ""        # TODO(dataset) or pass --data-dir
+  subject_regex: "^(chb\\d+)"
+  window_size_sec: 2.0
+  step_size_sec: 1.0
+  sampling_rate_hz: 256
+
+preprocessing:
+  scaler: standard
+  use_pca: false
+  impute_nonfinite: true
+
+augmentation:
+  enabled: true
+  gaussian_noise_std: 0.05
+  gaussian_noise_p: 0.5
+  amplitude_scale_delta: 0.1
+  amplitude_scale_p: 0.5
+  channel_dropout_max: 4       # electrode dropout / random electrode masking
+  channel_dropout_p: 0.5
+  freq_masking_bands_max: 1    # mask a whole band group (Delta/Theta/Alpha/Beta)
+  freq_masking_p: 0.3
+  temporal_mask_max_frac: 0.2  # only active when encoder.sequence_len > 1
+  temporal_mask_p: 0.3
+  n_views: 2
+
+encoder:
+  arch: cnn1d                  # mlp | cnn1d | tcn | cnn1d_transformer
+  embedding_dim: 128
+  hidden_dims: [256, 256]
+  conv_channels: [64, 128, 128]
+  kernel_size: 3
+  projection_dim: 64
+  projection_hidden: 128
+  dropout: 0.1
+  sequence_len: 1
+
+loss:
+  name: imbalance_supcon       # <-- proposed; compare vs balanced_supcon
+  temperature: 0.1
+  base_temperature: 0.1
+  minority_class: 1
+  minority_weight: 0.0         # 0 -> auto inverse-frequency
+  focal_gamma: 2.0
+  use_focal_weighting: true
+
+training:
+  epochs: 50
+  batch_size: 1024
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: adamw
+  scheduler: cosine
+  grad_clip: 5.0
+  num_workers: 8
+  amp: true
+  device: auto                 # auto-detects ROCm/CUDA; falls back to CPU
+  balanced_sampler: true
+  min_pos_per_batch: 16
+
+retrieval:
+  head: hybrid                 # linear | knn | hybrid
+  topk_values: [1, 5, 10, 20, 50]
+  decision_k: 10
+  similarity: cosine           # cosine | euclidean | rbf
+  rbf_gamma: 1.0
+  hybrid_alpha: 0.5
+  backend: auto                # faiss if available else sklearn
+  normalize_embeddings: true
+  max_bank_per_class: null     # keep all; set an int to cap the majority class
+
+stats:
+  bootstrap_n: 2000
+  bootstrap_ci: 0.95

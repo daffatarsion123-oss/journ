@@ -1,0 +1,37 @@
+# PRIMARY image: AMD MI300X / ROCm.
+#
+# Base is the official ROCm PyTorch image, which already ships a torch build
+# compiled for ROCm/HIP -- so we must NOT reinstall torch here (that would
+# clobber the ROCm wheel with a CPU/CUDA one). We only add the package's CPU
+# deps + optional extras (cuML/ThunderSVM are CUDA-only and intentionally
+# omitted; the code falls back to sklearn on ROCm).
+#
+# Pick the tag that matches your host ROCm driver. MI300X (gfx942) needs
+# ROCm >= 6.0. Override at build time:
+#   docker build -f docker/Dockerfile.rocm \
+#     --build-arg ROCM_PYTORCH_TAG=rocm6.2_ubuntu22.04_py3.10_pytorch_release-2.4.0 \
+#     -t eegrag:rocm .
+ARG ROCM_PYTORCH_TAG=rocm6.2_ubuntu22.04_py3.10_pytorch_release-2.4.0
+FROM rocm/pytorch:${ROCM_PYTORCH_TAG}
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/workspace/src
+
+WORKDIR /workspace
+
+# Install package deps WITHOUT torch (keep the base image's ROCm torch).
+# Copy metadata + src first for better layer caching, then the rest.
+COPY pyproject.toml requirements.txt ./
+COPY src ./src
+RUN python -m pip install --upgrade pip \
+    && pip install -e ".[faiss,gpu,stats]"
+
+# Now the rest (scripts / configs / tests / docker).
+COPY . .
+
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["bash"]

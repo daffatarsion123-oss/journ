@@ -1,0 +1,39 @@
+# Classical LOSO baselines (reproduces the conference-paper models).
+# Run: python scripts/run_loso_classical.py --config configs/classical.yaml --data-dir <parquet dir>
+name: classical
+output_dir: outputs
+seeds: [0, 1, 2]
+# folds_whitelist: [chb01, chb02]   # uncomment to restrict folds (smoke test)
+
+data:
+  # TODO(dataset): set this to the directory of *_features.parquet files,
+  #                or pass --data-dir on the CLI. Do NOT commit a local path.
+  features_dir: ""
+  # cache_dir: ""                   # set to enable .npz bundle caching
+  subject_regex: "^(chb\\d+)"       # collapses chb17a/b/c -> chb17
+  window_size_sec: 2.0
+  step_size_sec: 1.0
+  sampling_rate_hz: 256
+
+preprocessing:
+  scaler: standard
+  use_pca: false
+  impute_nonfinite: true
+
+classical:
+  models: [logreg, svm_rbf, random_forest, xgboost]
+  class_weight: balanced
+  prefer_gpu: true                  # cuML/ThunderSVM/XGB-GPU when available
+  svm_C_grid: [0.1, 1.0, 10.0, 100.0]
+  svm_gamma_grid: [scale, 0.001, 0.01, 0.1]
+  svm_class_weight_grid: [balanced, null]
+  rf_n_estimators: 300
+  xgb_n_estimators: 400
+  xgb_max_depth: 6
+  xgb_learning_rate: 0.05
+  inner_cv_folds: 3
+  hp_scoring: average_precision
+
+stats:
+  bootstrap_n: 2000
+  bootstrap_ci: 0.95

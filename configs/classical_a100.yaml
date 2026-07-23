@@ -1,0 +1,54 @@
+# A100 SXM classical-baseline config.
+#
+# Run this on the A100 only. Do NOT run on MI300X -- cuML is CUDA-only and
+# sklearn SVC on 23 subjects would take days without it.
+#
+# Every GPU-accelerated path (cuML SVC/LR/RF, cuML StandardScaler, cuML PCA,
+# cuML average_precision_score, XGBoost GPU-hist) is tried automatically when
+# cuML/XGBoost are installed. The code logs which backend each stage resolved to,
+# so you can confirm GPU paths were taken.
+#
+# Typical runtime on A100 80GB SXM (all 24 subjects x 3 seeds):
+#   SVM:   ~15-30 min  (GroupKFold HP search + full refit per fold)
+#   RF:    ~5-10 min
+#   LR:    ~2-5 min
+#   XGB:   ~5-10 min
+#
+# Usage:
+#   python scripts/run_loso_classical.py \
+#       --config configs/classical_a100.yaml \
+#       --data-dir /data
+name: classical
+output_dir: outputs
+seeds: [0, 1, 2]
+
+data:
+  features_dir: ""             # pass --data-dir
+  subject_regex: "^(chb\\d+)" # collapses chb17a/b/c -> chb17
+  window_size_sec: 2.0
+  step_size_sec: 1.0
+  sampling_rate_hz: 256
+
+preprocessing:
+  scaler: standard             # cuML StandardScaler on A100 (auto-detected)
+  use_pca: false               # set true + pca_components: N to also use cuML PCA
+  impute_nonfinite: true
+
+classical:
+  models: [logreg, svm_rbf, random_forest, xgboost]
+  class_weight: balanced
+  prefer_gpu: true             # cuML SVC/LR/RF + XGBoost GPU-hist
+  # SVM HP grid -- keep reasonably wide; GroupKFold on subject IDs prevents leakage
+  svm_C_grid: [0.1, 1.0, 10.0, 100.0]
+  svm_gamma_grid: [scale, 0.001, 0.01, 0.1]
+  svm_class_weight_grid: [balanced, null]
+  rf_n_estimators: 300
+  xgb_n_estimators: 400
+  xgb_max_depth: 6
+  xgb_learning_rate: 0.05
+  inner_cv_folds: 3            # GroupKFold folds for SVM / LR HP search
+  hp_scoring: average_precision # cuML AP score used in search loop on A100
+
+stats:
+  bootstrap_n: 2000
+  bootstrap_ci: 0.95

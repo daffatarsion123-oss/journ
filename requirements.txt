@@ -1,0 +1,26 @@
+# Core (CPU) -- always required.
+numpy>=1.24
+pandas>=2.0
+pyarrow>=12.0
+scipy>=1.11
+scikit-learn>=1.3
+pyyaml>=6.0
+
+# ---------------------------------------------------------------------------
+# Deep learning. Install the build that matches your accelerator. DO NOT pin a
+# CUDA wheel on the MI300X.
+#   ROCm (MI300X):  pip install torch --index-url https://download.pytorch.org/whl/rocm6.0
+#   CUDA:           pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   CPU only:       pip install torch --index-url https://download.pytorch.org/whl/cpu
+# torch>=2.1
+
+# ---------------------------------------------------------------------------
+# Optional accelerators / extras (all have graceful fallbacks):
+# faiss-cpu>=1.7            # retrieval index (falls back to sklearn NearestNeighbors)
+# xgboost>=2.0             # GPU hist is CUDA-only; CPU hist used on ROCm
+# pennylane>=0.34          # quantum simulator (falls back to classical RBF kernel)
+# scikit-posthocs>=0.9     # CD diagrams (core Nemenyi uses scipy only)
+# matplotlib>=3.7          # figures
+
+# RAPIDS cuML / ThunderSVM are CUDA-only and installed via conda; the classical
+# layer detects them at runtime and falls back to sklearn on ROCm/CPU.
