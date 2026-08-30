@@ -39,7 +39,7 @@ v2/
   configs/               # YAML configs
   outputs/               # metrics / predictions / embeddings / retrieval / stats / figures
 ```
-  
+
 ## Install
 
 Core deps are CPU-only and small. Install PyTorch separately to match your
