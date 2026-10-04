@@ -1,0 +1,4 @@
+# Required for resident RunPod linear probes; also accelerates classical models.
+--extra-index-url https://pypi.nvidia.com
+cuml-cu12==25.10.*
+cupy-cuda12x>=13.6,<14

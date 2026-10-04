@@ -33,7 +33,7 @@ def _flatten_views(features: torch.Tensor):
     """[B, V, D] -> contrast features [B*V, D] and view count V."""
     assert features.dim() == 3, "features must be [B, V, D]"
     b, v, d = features.shape
-    contrast = features.reshape(b * v, d)
+    contrast = features.transpose(0, 1).reshape(b * v, d)
     return contrast, b, v, d
 
 
@@ -60,7 +60,7 @@ def _supcon_core(
     contrast, b, v, d = _flatten_views(features)
 
     # similarity logits among all 2..V views
-    anchor_dot = torch.matmul(contrast, contrast.T) / temperature
+    anchor_dot = (torch.matmul(contrast, contrast.T) / temperature).float()
     # numerical stability
     logits_max, _ = anchor_dot.max(dim=1, keepdim=True)
     logits = anchor_dot - logits_max.detach()
@@ -86,7 +86,7 @@ def _supcon_core(
         (mask * log_prob).sum(dim=1)[valid] / pos_per_anchor[valid]
     )
 
-    per_anchor = -(base_temperature / temperature) * mean_log_prob_pos  # [B*V]
+    per_anchor = -(temperature / base_temperature) * mean_log_prob_pos  # [B*V]
 
     if anchor_weight is not None:
         w = anchor_weight.repeat(v)
@@ -154,16 +154,12 @@ class ImbalanceAwareSupConLoss(nn.Module):
 
     def _class_weights(self, labels: torch.Tensor) -> torch.Tensor:
         device = labels.device
-        uniq, counts = torch.unique(labels, return_counts=True)
-        inv = {int(c): 1.0 / float(n) for c, n in zip(uniq, counts)}
-        # normalize so weights average ~1
-        mean_inv = sum(inv.values()) / len(inv)
-        inv = {c: w / mean_inv for c, w in inv.items()}
-        if self.cfg.minority_weight > 0 and self.cfg.minority_class in inv:
-            inv[self.cfg.minority_class] = self.cfg.minority_weight
-        return torch.tensor(
-            [inv[int(y)] for y in labels], device=device, dtype=torch.float32
-        )
+        uniq, inverse, counts = torch.unique(labels, return_inverse=True, return_counts=True)
+        inv = counts.float().reciprocal()
+        inv = inv / inv.mean()
+        if self.cfg.minority_weight > 0:
+            inv = torch.where(uniq == self.cfg.minority_class, self.cfg.minority_weight, inv)
+        return inv[inverse]
 
     def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         class_w = self._class_weights(labels)
@@ -175,7 +171,7 @@ class ImbalanceAwareSupConLoss(nn.Module):
             )
 
         # First pass to get per-anchor positive mass for the focal term.
-        _, _, valid, mask, log_prob, pos_per_anchor = _supcon_core(
+        _, per_anchor, valid, mask, log_prob, pos_per_anchor = _supcon_core(
             features, labels, self.temperature, self.base_temperature,
             return_per_anchor=True,
         )
@@ -192,10 +188,7 @@ class ImbalanceAwareSupConLoss(nn.Module):
         # collapse focal back to per-anchor [B] by averaging across views
         focal_b = focal.view(v, b).mean(dim=0)
         anchor_weight = class_w * focal_b
-        return _supcon_core(
-            features, labels, self.temperature, self.base_temperature,
-            anchor_weight=anchor_weight,
-        )
+        return (per_anchor * anchor_weight.repeat(v))[valid].mean()
 
 
 class SimCLRLoss(nn.Module):

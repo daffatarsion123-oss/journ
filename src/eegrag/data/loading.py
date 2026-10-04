@@ -18,6 +18,8 @@ from __future__ import annotations
 import glob
 import os
 import re
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -111,6 +113,7 @@ class EEGFeatureBundle:
     layout: FeatureLayout
     subject_order: List[str]      # unique subjects, discovery order
     data_cfg: DataConfig
+    source_signature: Optional[str] = None
 
     @property
     def n_windows(self) -> int:
@@ -151,6 +154,7 @@ def load_subject_frames(
     by_subject: Dict[str, List[pd.DataFrame]] = {}
     for path in paths:
         subject = subject_id_from_filename(path, cfg.subject_regex)
+        subject = cfg.patient_aliases.get(subject, subject)
         if cfg.subjects_whitelist and subject not in cfg.subjects_whitelist:
             continue
         df = pd.read_parquet(path)
@@ -174,9 +178,26 @@ def assemble_dataset(cfg: DataConfig) -> EEGFeatureBundle:
     Uses a cache file (``cfg.cache_dir/bundle.npz``) when present to skip the
     parquet read on repeated runs. Float32 is used to halve memory vs float64.
     """
+    canonical_columns = None
+    if cfg.feature_schema_path:
+        with open(cfg.feature_schema_path, encoding="utf-8") as fh:
+            canonical_columns = json.load(fh)
+        if not canonical_columns or len(set(canonical_columns)) != len(canonical_columns):
+            raise ValueError("Feature schema must contain a nonempty unique column list")
+    if cfg.storage_backend == "cupy":
+        return _assemble_device_dataset(cfg, canonical_columns)
     if cfg.cache_dir:
-        cache_path = os.path.join(cfg.cache_dir, "bundle.npz")
-        cols_path = os.path.join(cfg.cache_dir, "bundle_columns.txt")
+        cache_key = hashlib.sha256(json.dumps({
+            "aliases": cfg.patient_aliases, "features_dir": os.path.abspath(cfg.features_dir),
+            "whitelist": cfg.subjects_whitelist, "regex": cfg.subject_regex,
+            "schema": cfg.meta_columns,
+            "canonical_columns": canonical_columns,
+            "missing_feature_policy": cfg.missing_feature_policy,
+            "files": [(p, os.stat(p).st_size, os.stat(p).st_mtime_ns)
+                      for p in discover_recordings(cfg)],
+        }, sort_keys=True).encode()).hexdigest()[:16]
+        cache_path = os.path.join(cfg.cache_dir, f"bundle_{cache_key}.npz")
+        cols_path = os.path.join(cfg.cache_dir, f"bundle_{cache_key}_columns.txt")
         if os.path.exists(cache_path) and os.path.exists(cols_path):
             log.info("Loading assembled bundle from cache: %s", cache_path)
             with np.load(cache_path, allow_pickle=True) as z:
@@ -201,7 +222,7 @@ def assemble_dataset(cfg: DataConfig) -> EEGFeatureBundle:
 
     # Establish the canonical feature-column order from the first frame.
     first_df = next(iter(by_subject.values()))[0]
-    feat_cols = _feature_columns(first_df, cfg)
+    feat_cols = canonical_columns or _feature_columns(first_df, cfg)
     layout = FeatureLayout.from_columns(feat_cols)
     log.info("%s", layout.describe())
 
@@ -217,12 +238,17 @@ def assemble_dataset(cfg: DataConfig) -> EEGFeatureBundle:
         subject_order.append(subject)
         for df in by_subject[subject]:
             missing = [c for c in feat_cols if c not in df.columns]
-            if missing:
+            if len(missing) == len(feat_cols):
+                raise ValueError("Recording has no observed features in the configured schema")
+            if missing and cfg.missing_feature_policy == "error":
                 raise ValueError(
                     f"Recording for {subject} missing feature columns: {missing[:5]}"
                     f"{'...' if len(missing) > 5 else ''}"
                 )
-            x = df[feat_cols].to_numpy(dtype=np.float32, copy=False)
+            if missing:
+                log.warning("Recording %s lacks %d features; train-median imputation required",
+                            df["__recording__"].iloc[0], len(missing))
+            x = df.reindex(columns=feat_cols).to_numpy(dtype=np.float32, copy=False)
             y = df[cfg.label_column].to_numpy(dtype=np.int8, copy=False)
             n = x.shape[0]
             feats_parts.append(x)
@@ -257,7 +283,7 @@ def assemble_dataset(cfg: DataConfig) -> EEGFeatureBundle:
     if cfg.cache_dir:
         os.makedirs(cfg.cache_dir, exist_ok=True)
         np.savez_compressed(
-            os.path.join(cfg.cache_dir, "bundle.npz"),
+            cache_path,
             features=bundle.features,
             labels=bundle.labels,
             subjects=bundle.subjects,
@@ -267,9 +293,67 @@ def assemble_dataset(cfg: DataConfig) -> EEGFeatureBundle:
             subject_order=np.asarray(subject_order, dtype=object),
         )
         with open(
-            os.path.join(cfg.cache_dir, "bundle_columns.txt"), "w", encoding="utf-8"
+            cols_path, "w", encoding="utf-8"
         ) as fh:
             fh.write("\n".join(feat_cols))
         log.info("Cached assembled bundle to %s", cfg.cache_dir)
 
     return bundle
+
+
+def _assemble_device_dataset(cfg, canonical_columns):
+    """Decode one recording at a time; never assemble the feature matrix in RAM."""
+    import cupy as cp
+    import pyarrow.parquet as pq
+
+    selected = []
+    for path in discover_recordings(cfg):
+        subject = subject_id_from_filename(path, cfg.subject_regex)
+        subject = cfg.patient_aliases.get(subject, subject)
+        if not cfg.subjects_whitelist or subject in cfg.subjects_whitelist:
+            selected.append((subject, path, pq.ParquetFile(path).metadata.num_rows))
+    selected.sort(key=lambda item: (item[0], item[1]))
+    if not selected:
+        raise RuntimeError("No subjects loaded. Check subjects_whitelist")
+    columns = canonical_columns or _feature_columns(pd.read_parquet(selected[0][1]), cfg)
+    layout = FeatureLayout.from_columns(columns)
+    count = sum(item[2] for item in selected)
+    needed = count * len(columns) * 4
+    free, _ = cp.cuda.runtime.memGetInfo()
+    if needed * 3 + 2**30 > free:
+        raise MemoryError("GPU feature storage plus fold/workspace reserve exceeds free VRAM")
+    features = cp.empty((count, len(columns)), dtype=cp.float32)
+    labels = np.empty(count, dtype=np.int8)
+    subjects = np.empty(count, dtype=object)
+    recordings = np.empty(count, dtype=object)
+    starts, ends = np.empty(count, np.float32), np.empty(count, np.float32)
+    digest = hashlib.sha256()
+    digest.update(json.dumps({"columns": columns, "config": cfg.__dict__}, sort_keys=True).encode())
+    offset = 0
+    for subject, path, rows in selected:
+        with open(path, "rb") as handle:
+            while chunk := handle.read(8 * 1024 * 1024):
+                digest.update(chunk)
+        df = pd.read_parquet(path)
+        missing = [name for name in columns if name not in df.columns]
+        if len(missing) == len(columns):
+            raise ValueError("Recording has no observed features in the configured schema")
+        if missing and cfg.missing_feature_policy == "error":
+            raise ValueError(f"Recording for {subject} missing feature columns: {missing[:5]}")
+        if len(df) != rows:
+            raise ValueError("Parquet changed while loading")
+        target = slice(offset, offset + rows)
+        host = df.reindex(columns=columns).to_numpy(dtype=np.float32, copy=False)
+        features[target] = cp.asarray(host, blocking=True)
+        labels[target] = df[cfg.label_column].to_numpy(dtype=np.int8)
+        subjects[target] = subject
+        recordings[target] = recording_id_from_filename(path)
+        starts[target] = df[cfg.window_start_column].to_numpy(dtype=np.float32)
+        ends[target] = df[cfg.window_end_column].to_numpy(dtype=np.float32)
+        offset += rows
+        del df, host
+    cp.cuda.get_current_stream().synchronize()
+    log.info("GPU bundle: %d windows x %d features = %.2f GiB, streamed from parquet; host NPZ cache bypassed",
+             count, len(columns), needed / 2**30)
+    return EEGFeatureBundle(features, labels, subjects, recordings, starts, ends,
+                            layout, sorted(set(subjects)), cfg, digest.hexdigest())

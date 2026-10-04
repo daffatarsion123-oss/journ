@@ -38,8 +38,8 @@ def base_parser(description: str) -> argparse.ArgumentParser:
                    help="Directory of saved per-fold embeddings (for re-analysis).")
     p.add_argument("--train-only", action="store_true", default=False,
                    help="Train encoder + extract embeddings only; skip retrieval eval. "
-                        "Use on A100 for fast BF16 training, then copy NPZs to MI300X "
-                        "and run run_retrieval_eval.py there.")
+                        "Use to separate encoder training from retrieval evaluation. "
+                        "Run run_retrieval_eval.py over the saved embeddings.")
     return p
 
 

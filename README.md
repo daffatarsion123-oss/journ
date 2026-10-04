@@ -1,5 +1,13 @@
 # Retrieval-Augmented Cross-Subject EEG Learning for Seizure Detection
 
+For the current RTX PRO 6000 Blackwell / RunPod PyTorch 2.8 environment, use
+[RUNPOD.md](RUNPOD.md), `configs/contrastive_runpod.yaml` and
+`requirements-runpod.txt` plus `requirements-runpod-rapids.txt`. The RunPod
+profiles keep features/preprocessing/embeddings in VRAM through CuPy and DLPack.
+The guide contains the current data-schema audit, GPU
+preflight, restart instructions, and a real-data runtime/cost benchmark.
+The older MI300X/A100 examples below are historical profiles.
+
 Research codebase for the journal extension of the CHB-MIT seizure-detection
 conference paper. It moves beyond classical supervised ML into **contrastive
 representation learning + retrieval-augmented decision support**, evaluated under

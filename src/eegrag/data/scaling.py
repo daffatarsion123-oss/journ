@@ -82,21 +82,29 @@ class FeaturePreprocessor:
         """Impute non-finite values with column medians (computed on train only)."""
         if not self.cfg.impute_nonfinite:
             return x
-        x = np.asarray(x, dtype=np.float64)  # float64 for median precision
-        mask = ~np.isfinite(x)
+        x = np.array(x, dtype=np.float32, copy=True)
         if fitting:
-            safe = np.where(np.isfinite(x), x, np.nan)
-            med = np.nanmedian(safe, axis=0)
-            self._impute_values = np.where(np.isfinite(med), med, 0.0)
-        if mask.any():
-            x[mask] = self._impute_values[np.where(mask)[1]]
+            self._impute_values = np.empty(x.shape[1], dtype=np.float32)
+            for first in range(0, x.shape[1], 32):
+                block = x[:, first:first + 32]
+                observed = np.isfinite(block).any(axis=0)
+                med = np.zeros(block.shape[1], dtype=np.float32)
+                if observed.any():
+                    available = block[:, observed]
+                    safe = np.where(np.isfinite(available), available, np.nan)
+                    med[observed] = np.nanmedian(safe, axis=0, overwrite_input=True)
+                self._impute_values[first:first + 32] = np.where(np.isfinite(med), med, 0)
+        for first in range(0, x.shape[1], 32):
+            block = x[:, first:first + 32]
+            rows, columns = np.where(~np.isfinite(block))
+            block[rows, columns] = self._impute_values[first + columns]
         return x
 
     def fit(
         self, x_train: np.ndarray, y_train: Optional[np.ndarray] = None
     ) -> "FeaturePreprocessor":
         """Fit ALL stages on training data only. ``y_train`` needed for selection."""
-        x = self._impute(np.asarray(x_train, dtype=np.float64), fitting=True)
+        x = self._impute(x_train, fitting=True)
         self.n_features_in_ = x.shape[1]
 
         # Use float32 from here on: cuML requires it and it's the downstream dtype.
@@ -104,7 +112,9 @@ class FeaturePreprocessor:
 
         self._scaler, self._scaler_backend = _build_scaler(self.cfg.scaler)
         if self._scaler is not None:
-            x = _to_numpy(self._scaler.fit_transform(x)).astype(np.float32)
+            self._scaler.fit(x)
+            if self.cfg.feature_selection_k or self.cfg.use_pca:
+                x = _to_numpy(self._scaler.transform(x)).astype(np.float32)
 
         if self.cfg.feature_selection_k:
             if y_train is None:
@@ -133,7 +143,7 @@ class FeaturePreprocessor:
     def transform(self, x: np.ndarray) -> np.ndarray:
         if not self._fitted:
             raise RuntimeError("FeaturePreprocessor.transform called before fit")
-        x = self._impute(np.asarray(x, dtype=np.float64), fitting=False)
+        x = self._impute(x, fitting=False)
         x = x.astype(np.float32)
         if self._scaler is not None:
             x = _to_numpy(self._scaler.transform(x)).astype(np.float32)

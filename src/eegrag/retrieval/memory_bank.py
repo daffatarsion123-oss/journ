@@ -19,6 +19,7 @@ import numpy as np
 from ..utils.logging import get_logger
 from .index import build_index, NeighborIndex
 from .similarity import similarity_from_neighbors
+from ..utils.arrays import array_module
 
 log = get_logger(__name__)
 
@@ -48,8 +49,10 @@ class MemoryBank:
         *,
         global_idx: Optional[np.ndarray] = None,
         test_subject: Optional[str] = None,
+        query_chunk_size: int = 512,
+        bank_chunk_size: int = 32768,
     ):
-        self.embeddings = np.ascontiguousarray(embeddings, dtype=np.float32)
+        self.embeddings = array_module(embeddings).ascontiguousarray(embeddings, dtype=np.float32)
         self.labels = np.asarray(labels).astype(np.int64)
         self.subjects = np.asarray(subjects, dtype=object)
         # global bundle indices (for the leakage assertion against a fold)
@@ -58,6 +61,8 @@ class MemoryBank:
             else np.arange(len(self.labels))
         )
         self.test_subject = test_subject
+        self.query_chunk_size = query_chunk_size
+        self.bank_chunk_size = bank_chunk_size
         self._indices: dict = {}            # metric name -> NeighborIndex
         self._assert_no_test_subject()
 
@@ -102,7 +107,8 @@ class MemoryBank:
                 idx_metric, self.size, metric,
             )
             self._indices[idx_metric] = build_index(
-                self.embeddings, idx_metric, backend
+                self.embeddings, idx_metric, backend,
+                self.query_chunk_size, self.bank_chunk_size,
             )
         return self._indices[idx_metric]
 
@@ -158,17 +164,20 @@ def build_memory_bank(
     test_subject: Optional[str] = None,
     max_per_class: Optional[int] = None,
     seed: int = 0,
+    query_chunk_size: int = 512,
+    bank_chunk_size: int = 32768,
 ) -> MemoryBank:
     """Build a memory bank from TRAINING data, with optional majority capping."""
     sel = _subsample_majority(np.asarray(labels), np.asarray(subjects),
                               max_per_class, seed)
     gi = None if global_idx is None else np.asarray(global_idx)[sel]
     bank = MemoryBank(
-        embeddings=np.asarray(embeddings)[sel],
+        embeddings=embeddings[sel],
         labels=np.asarray(labels)[sel],
         subjects=np.asarray(subjects)[sel],
         global_idx=gi,
         test_subject=test_subject,
+        query_chunk_size=query_chunk_size, bank_chunk_size=bank_chunk_size,
     )
     log.info(
         "Memory bank: %d windows | %d seizure | %d subjects (test subject excluded=%s)",

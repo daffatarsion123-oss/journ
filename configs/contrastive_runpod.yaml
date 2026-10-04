@@ -1,0 +1,44 @@
+name: runpod_imbalance_supcon
+output_dir: outputs
+seeds: [0, 1, 2]
+data:
+  storage_backend: cupy
+  features_dir: ""
+  cache_dir: outputs/data_cache
+  patient_aliases: {chb21: chb01}
+  feature_schema_path: configs/chbmit_feature_schema.json
+  missing_feature_policy: impute
+preprocessing:
+  backend: cupy
+  scaler: standard
+  use_pca: false
+encoder:
+  arch: cnn1d
+  embedding_dim: 128
+  conv_channels: [64, 128, 128]
+  projection_dim: 64
+loss:
+  name: imbalance_supcon
+  focal_gamma: 2.0
+  use_focal_weighting: true
+training:
+  gpu_resident: true
+  epochs: 50
+  batch_size: 2048
+  tensor_batches: true
+  steps_per_epoch: null
+  positive_fraction: 0.5
+  num_workers: 0
+  device: cuda
+  amp: true
+  amp_dtype: bfloat16
+  deterministic: false
+  allow_tf32: false
+  checkpoint_every: 1
+retrieval:
+  backend: torch
+  max_bank_per_class: 100000
+  query_chunk_size: 512
+  bank_chunk_size: 32768
+  topk_values: [1, 5, 10, 20, 50]
+  decision_k: 10

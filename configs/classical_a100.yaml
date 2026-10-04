@@ -8,11 +8,8 @@
 # cuML/XGBoost are installed. The code logs which backend each stage resolved to,
 # so you can confirm GPU paths were taken.
 #
-# Typical runtime on A100 80GB SXM (all 24 subjects x 3 seeds):
-#   SVM:   ~15-30 min  (GroupKFold HP search + full refit per fold)
-#   RF:    ~5-10 min
-#   LR:    ~2-5 min
-#   XGB:   ~5-10 min
+# Runtime is not benchmarked. Full RBF-SVM search on millions of rows can
+# dominate the budget; measure an individual fit before a complete sweep.
 #
 # Usage:
 #   python scripts/run_loso_classical.py \

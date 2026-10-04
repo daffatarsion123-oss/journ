@@ -65,11 +65,26 @@ def prepare_fold(
     """Produce transformed train/test arrays for a fold (leakage-safe)."""
     assert_no_subject_leakage(bundle, fold, context="prepare-fold")
 
-    if preprocessor is None:
-        preprocessor = fit_fold_preprocessor(bundle, fold, cfg)
-
-    x_train = preprocessor.transform(bundle.features[fold.train_idx])
-    x_test = preprocessor.transform(bundle.features[fold.test_idx])
+    if cfg.backend == "cupy":
+        from ..data.gpu_scaling import CuPyFeaturePreprocessor
+        from ..utils.arrays import is_cuda_array, synchronize
+        if not is_cuda_array(bundle.features):
+            raise ValueError("CuPy preprocessing requires data.storage_backend=cupy")
+        if preprocessor is None:
+            preprocessor = CuPyFeaturePreprocessor(cfg)
+            x_train = preprocessor.fit_transform(bundle.features[fold.train_idx])
+        else:
+            x_train = preprocessor.transform(bundle.features[fold.train_idx])
+        x_test = preprocessor.transform(bundle.features[fold.test_idx])
+        synchronize(x_test)
+    else:
+        from ..utils.arrays import is_cuda_array
+        if is_cuda_array(bundle.features):
+            raise ValueError("GPU feature storage requires preprocessing.backend=cupy")
+        if preprocessor is None:
+            preprocessor = fit_fold_preprocessor(bundle, fold, cfg)
+        x_train = preprocessor.transform(bundle.features[fold.train_idx])
+        x_test = preprocessor.transform(bundle.features[fold.test_idx])
 
     return FoldArrays(
         fold=fold,

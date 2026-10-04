@@ -78,7 +78,8 @@ def _build_logreg(cfg: ClassicalConfig, info: BackendInfo, **params):
     if cfg.prefer_gpu and info.cuml:
         try:
             from cuml.linear_model import LogisticRegression as cuLR
-            return cuLR(max_iter=1000, **_filter(params, {"C"})), "cuml", True
+            return cuLR(max_iter=1000, class_weight=cfg.class_weight,
+                        **_filter(params, {"C"})), "cuml", True
         except Exception as exc:  # pragma: no cover - depends on env
             log.warning("cuML LogisticRegression unavailable (%s); using sklearn", exc)
     from sklearn.linear_model import LogisticRegression
@@ -101,9 +102,8 @@ def _build_svm_rbf(cfg: ClassicalConfig, info: BackendInfo, **params):
     if cfg.prefer_gpu and info.cuml:
         try:
             from cuml.svm import SVC as cuSVC
-            # cuML SVC has no class_weight; we rely on the balanced sampler /
-            # the C grid to compensate. probability=True enables predict_proba.
-            return cuSVC(kernel="rbf", C=C, gamma=gamma, probability=True), "cuml", True
+            return cuSVC(kernel="rbf", C=C, gamma=gamma, class_weight=cw,
+                         probability=True), "cuml", True
         except Exception as exc:  # pragma: no cover
             log.warning("cuML SVC unavailable (%s); trying ThunderSVM", exc)
     if cfg.prefer_gpu and info.thundersvm:

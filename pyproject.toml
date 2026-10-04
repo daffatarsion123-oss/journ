@@ -18,7 +18,7 @@ dependencies = [
     "psutil>=5.9",   # peak-RAM sampling for compute-cost instrumentation
 ]
 
-[project1211.optional-dependencies]
+[project.optional-dependencies]
 # Deep learning (install the ROCm or CUDA build of torch separately to match
 # your accelerator -- see README).
 torch = ["torch>=2.1"]

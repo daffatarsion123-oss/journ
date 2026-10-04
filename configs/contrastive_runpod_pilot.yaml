@@ -1,0 +1,32 @@
+name: runpod_pilot_imbalance_supcon
+output_dir: outputs
+seeds: [0]
+folds_whitelist: [chb01]
+data:
+  storage_backend: cupy
+  features_dir: ""
+  cache_dir: outputs/data_cache
+  patient_aliases: {chb21: chb01}
+  feature_schema_path: configs/chbmit_feature_schema.json
+  missing_feature_policy: impute
+preprocessing:
+  backend: cupy
+  scaler: standard
+training:
+  gpu_resident: true
+  epochs: 5
+  batch_size: 2048
+  tensor_batches: true
+  steps_per_epoch: 256
+  positive_fraction: 0.5
+  num_workers: 0
+  device: cuda
+  amp: true
+  amp_dtype: bfloat16
+  deterministic: false
+  checkpoint_every: 1
+retrieval:
+  backend: torch
+  max_bank_per_class: 100000
+  query_chunk_size: 512
+  bank_chunk_size: 32768

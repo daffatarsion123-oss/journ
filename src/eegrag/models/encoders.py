@@ -70,6 +70,8 @@ class CNN1DEncoder(_BaseEncoder):
         self.embedding_dim = cfg.embedding_dim
         self.layout = layout
         self.regular = layout.is_regular and input_dim == layout.n_features
+        self.register_buffer("column_order", torch.as_tensor(
+            _channel_major_order(layout), dtype=torch.long), persistent=False)
         in_ch = layout.n_feat_per_channel if self.regular else 1
 
         convs = []
@@ -93,10 +95,7 @@ class CNN1DEncoder(_BaseEncoder):
             n_c = self.layout.n_channels
             n_f = self.layout.n_feat_per_channel
             # reorder columns into channel-major then view [B, n_c, n_f] -> [B, n_f, n_c]
-            order = torch.as_tensor(
-                _channel_major_order(self.layout), device=x.device, dtype=torch.long
-            )
-            x = x.index_select(1, order).reshape(b, n_c, n_f).transpose(1, 2)
+            x = x.index_select(1, self.column_order).reshape(b, n_c, n_f).transpose(1, 2)
             return x
         return x.unsqueeze(1)  # [B, 1, F]
 

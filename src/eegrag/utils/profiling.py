@@ -85,7 +85,7 @@ class _RamSampler(threading.Thread):
         super().__init__(daemon=True)
         self.interval = interval
         self.peak_bytes = 0
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         start = _current_rss_bytes()
         self._enabled = start is not None
         if start is not None:
@@ -94,14 +94,14 @@ class _RamSampler(threading.Thread):
     def run(self) -> None:
         if not self._enabled:
             return
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             rss = _current_rss_bytes()
             if rss is not None and rss > self.peak_bytes:
                 self.peak_bytes = rss
-            self._stop.wait(self.interval)
+            self._stop_event.wait(self.interval)
 
     def stop(self) -> float:
-        self._stop.set()
+        self._stop_event.set()
         if self.is_alive():
             self.join(timeout=1.0)
         return (self.peak_bytes / 1e9) if self._enabled else NAN

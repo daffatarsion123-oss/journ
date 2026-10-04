@@ -10,7 +10,7 @@ the linear head).
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -28,6 +28,7 @@ from ..retrieval import (
 )
 from ..utils.io import save_json, save_npz, ensure_dir
 from ..utils.logging import get_logger
+from ..retrieval.similarity import similarity_from_neighbors
 
 log = get_logger(__name__)
 
@@ -43,14 +44,26 @@ class FoldRetrievalResult:
     cost: Dict[str, float] = field(default_factory=dict)               # retrieval-cost record
 
 
-def _knn_scores_leave_self_out(bank, queries, k, metric, gamma):
+def _slice_result(result, k, metric=None, gamma=1.0):
+    k = min(k, result.neighbor_idx.shape[1])
+    metric = metric or result.metric
+    raw = result.raw[:, :k]
+    return replace(result, neighbor_idx=result.neighbor_idx[:, :k], raw=raw,
+                   similarity=similarity_from_neighbors(raw, metric, gamma),
+                   neighbor_labels=result.neighbor_labels[:, :k],
+                   neighbor_subjects=result.neighbor_subjects[:, :k], metric=metric, k=k)
+
+
+def _knn_scores_leave_self_out(bank, queries, k, metric, gamma, backend="auto"):
     """k-NN seizure score for queries that ARE in the bank (drop the self hit)."""
-    res = bank.retrieve(queries, k + 1, metric=metric, gamma=gamma)
-    # drop the nearest neighbor (assumed self) per row, keep next k
-    res.neighbor_idx = res.neighbor_idx[:, 1:]
-    res.similarity = res.similarity[:, 1:]
-    res.neighbor_labels = res.neighbor_labels[:, 1:]
-    res.neighbor_subjects = res.neighbor_subjects[:, 1:]
+    if bank.size < 2:
+        raise ValueError("Leave-self-out calibration requires at least two bank entries")
+    k = min(k, bank.size - 1)
+    res = bank.retrieve(queries, k + 1, metric=metric, gamma=gamma, backend=backend)
+    keep = res.neighbor_idx != np.arange(len(queries))[:, None]
+    positions = np.argsort(~keep, axis=1, kind="stable")[:, :k]
+    for name in ("neighbor_idx", "similarity", "raw", "neighbor_labels", "neighbor_subjects"):
+        setattr(res, name, np.take_along_axis(getattr(res, name), positions, axis=1))
     res.k = k
     return knn_seizure_score(res, weighted=True)
 
@@ -85,6 +98,7 @@ def evaluate_retrieval_for_fold(
         train_emb, train_labels, train_subjects,
         global_idx=fold.train_idx, test_subject=fold.test_subject,
         max_per_class=rcfg.max_bank_per_class, seed=rcfg.seed,
+        query_chunk_size=rcfg.query_chunk_size, bank_chunk_size=rcfg.bank_chunk_size,
     )
     assert_no_subject_leakage(
         bundle, fold, bank_idx=bank.global_idx, context="retrieval-bank"
@@ -96,10 +110,12 @@ def evaluate_retrieval_for_fold(
     # --- decision-k retrieval for the test subject ------------------------ #
     # Capture index-build + query cost for the decision path only (the neighbor
     # sweep below is analysis overhead, not counted as retrieval cost).
-    test_res = bank.retrieve(
-        test_emb, rcfg.decision_k, metric=rcfg.similarity, gamma=rcfg.rbf_gamma,
+    largest = max(rcfg.topk_values)
+    decision_neighbors = bank.retrieve(
+        test_emb, largest, metric=rcfg.similarity, gamma=rcfg.rbf_gamma,
         backend=rcfg.backend,
     )
+    test_res = _slice_result(decision_neighbors, rcfg.decision_k, gamma=rcfg.rbf_gamma)
     result.cost = {
         "embed_train_sec": round(embed_train_sec, 4),
         "embed_test_sec": round(embed_test_sec, 4),
@@ -126,7 +142,7 @@ def evaluate_retrieval_for_fold(
     # --- thresholds tuned on TRAIN ONLY ----------------------------------- #
     # knn head: leave-self-out k-NN scores on the bank itself
     knn_train = _knn_scores_leave_self_out(
-        bank, bank.embeddings, rcfg.decision_k, rcfg.similarity, rcfg.rbf_gamma
+        bank, bank.embeddings, rcfg.decision_k, rcfg.similarity, rcfg.rbf_gamma, rcfg.backend
     )
     t_knn = tune_threshold(bank_labels, knn_train, criterion="f1")
     result.thresholds["knn"] = t_knn
@@ -155,10 +171,14 @@ def evaluate_retrieval_for_fold(
     # --- neighbor study: sweep similarities x k --------------------------- #
     preds_for_support = (knn_test >= t_knn).astype(int)
     per_metric_results = {}
+    cache = {"ip" if rcfg.similarity == "cosine" else "l2": decision_neighbors}
     for metric in ("cosine", "euclidean", "rbf"):
+        key = "ip" if metric == "cosine" else "l2"
+        if key not in cache:
+            cache[key] = bank.retrieve(test_emb, largest, metric=metric,
+                                      gamma=rcfg.rbf_gamma, backend=rcfg.backend)
         for k in rcfg.topk_values:
-            res_k = bank.retrieve(test_emb, k, metric=metric, gamma=rcfg.rbf_gamma,
-                                  backend=rcfg.backend)
+            res_k = _slice_result(cache[key], k, metric=metric, gamma=rcfg.rbf_gamma)
             stats = neighbor_analysis(res_k, test_subjects, predictions=preds_for_support)
             result.neighbor_stats[f"{metric}@{k}"] = stats.to_dict()
             if k == rcfg.decision_k:
@@ -204,6 +224,8 @@ def evaluate_retrieval_for_fold(
                 "bank_size": bank.size,
                 "bank_n_pos": bank.n_pos,
                 "bank_n_subjects": bank.n_subjects,
+                "bank_majority_cap": rcfg.max_bank_per_class,
+                "calibration": "training_bank_leave_self_out",
             },
             os.path.join(save_dir, "metrics", f"{tag}.json"),
         )
@@ -235,10 +257,12 @@ def run_retrieval_eval(cfg: ExperimentConfig, embeddings_dir: str) -> Dict:
                 log.warning("Missing embeddings for %s; skipping.", tag)
                 continue
             z = load_npz(emb_path)
+            from ._engine import train_linear_head
+            linear_clf = train_linear_head(z["train_emb"], bundle.labels[fold.train_idx], cfg, seed)
             res = evaluate_retrieval_for_fold(
                 bundle=bundle, fold=fold,
                 train_emb=z["train_emb"], test_emb=z["test_emb"],
-                cfg=cfg, seed=seed, linear_clf=None, save_dir=out_dir,
+                cfg=cfg, seed=seed, linear_clf=linear_clf, save_dir=out_dir,
             )
             # embeddings loaded from disk -> embed times are NaN (recorded as such)
             clog.add_retrieval_cost(

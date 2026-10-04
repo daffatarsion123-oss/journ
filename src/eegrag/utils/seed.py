@@ -22,6 +22,9 @@ def seed_everything(seed: int, deterministic_torch: bool = True) -> int:
         import torch
 
         torch.manual_seed(seed)
+        torch.backends.cudnn.deterministic = deterministic_torch
+        torch.backends.cudnn.benchmark = not deterministic_torch
+        torch.use_deterministic_algorithms(deterministic_torch, warn_only=True)
         if torch.cuda.is_available():           # True on ROCm builds too
             torch.cuda.manual_seed_all(seed)
         if deterministic_torch:

@@ -29,6 +29,7 @@ class DataConfig:
     # TODO: set this (or pass --data.features_dir) to the directory that holds
     #       the per-recording *_features.parquet files. Do NOT hardcode here.
     features_dir: str = ""
+    storage_backend: str = "numpy"
 
     glob_pattern: str = "*_features.parquet"
     # Columns that are NOT model features.
@@ -40,6 +41,7 @@ class DataConfig:
     # Regex capturing the subject id from a filename. Default collapses
     # chb17a/chb17b/chb17c -> chb17 (same physical subject, different sessions).
     subject_regex: str = r"^(chb\d+)"
+    patient_aliases: Dict[str, str] = field(default_factory=lambda: {"chb21": "chb01"})
 
     # Window geometry (used for false-positives-per-hour accounting).
     window_size_sec: float = 2.0
@@ -50,8 +52,12 @@ class DataConfig:
     subjects_whitelist: Optional[List[str]] = None
     # Cache the assembled per-subject arrays as .npz to skip re-reading parquet.
     cache_dir: Optional[str] = None
+    feature_schema_path: Optional[str] = None
+    missing_feature_policy: str = "error"
 
     def __post_init__(self) -> None:
+        assert self.storage_backend in {"numpy", "cupy"}
+        assert self.missing_feature_policy in {"error", "impute"}
         assert self.window_size_sec > 0, "window_size_sec must be > 0"
         assert self.step_size_sec > 0, "step_size_sec must be > 0"
         assert self.sampling_rate_hz > 0, "sampling_rate_hz must be > 0"
@@ -182,6 +188,14 @@ class LossConfig:
 # --------------------------------------------------------------------------- #
 @dataclass
 class TrainingConfig:
+    gpu_resident: bool = False
+    save_embeddings: bool = True
+    tensor_batches: bool = False
+    steps_per_epoch: Optional[int] = None
+    positive_fraction: float = 0.5
+    deterministic: bool = True
+    allow_tf32: bool = False
+    checkpoint_every: int = 1
     epochs: int = 50
     batch_size: int = 1024
     lr: float = 1e-3
@@ -205,6 +219,10 @@ class TrainingConfig:
     early_stop_patience: int = 0         # 0 disables early stopping
 
     def __post_init__(self) -> None:
+        assert self.batch_size > 1 and self.epochs > 0
+        assert self.steps_per_epoch is None or self.steps_per_epoch > 0
+        assert 0 < self.positive_fraction < 1
+        assert self.checkpoint_every > 0
         valid_dtypes = {"float16", "bfloat16"}
         assert self.amp_dtype in valid_dtypes, (
             f"amp_dtype must be one of {valid_dtypes}, got {self.amp_dtype!r}"
@@ -216,6 +234,7 @@ class TrainingConfig:
 # --------------------------------------------------------------------------- #
 @dataclass
 class RetrievalConfig:
+    linear_probe_max_negatives: Optional[int] = None
     """Memory-bank / k-NN retrieval head configuration."""
 
     head: str = "hybrid"                 # "linear" | "knn" | "hybrid"
@@ -233,6 +252,8 @@ class RetrievalConfig:
     # Down-sample the (majority) memory bank to control cost; keep ALL seizures.
     max_bank_per_class: Optional[int] = None
     seed: int = 0
+    query_chunk_size: int = 512
+    bank_chunk_size: int = 32768
 
     def __post_init__(self) -> None:
         assert self.head in {"linear", "knn", "hybrid"}
@@ -316,12 +337,16 @@ class PreprocessingConfig:
     """Train-only preprocessing pipeline (fit on training subjects ONLY)."""
 
     scaler: str = "standard"             # "standard" | "robust" | "none"
+    backend: str = "auto"
     use_pca: bool = False
     pca_components: float = 0.99          # int -> #components, float -> variance kept
     # Optional univariate feature selection (k best by ANOVA F).
     feature_selection_k: Optional[int] = None
     # Replace non-finite feature values produced by extraction edge-cases.
     impute_nonfinite: bool = True
+
+    def __post_init__(self):
+        assert self.backend in {"auto", "cupy"}
 
 
 # --------------------------------------------------------------------------- #

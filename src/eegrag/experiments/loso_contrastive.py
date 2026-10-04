@@ -30,6 +30,8 @@ from ..utils.logging import get_logger
 from ..utils.profiling import ComputeLog, ResourceTracker
 from ..utils.seed import seed_everything
 from .retrieval_eval import evaluate_retrieval_for_fold
+from ..utils.arrays import to_host, validate_resident_config
+import hashlib
 
 log = get_logger(__name__)
 
@@ -44,6 +46,10 @@ def run_loso_contrastive(cfg: ExperimentConfig, train_only: bool = False) -> Dic
             ``run_retrieval_eval.py`` there.
     """
     from . import _engine  # lazy: only this runner needs torch
+    validate_resident_config(cfg)
+
+    if train_only and not cfg.training.save_embeddings:
+        raise ValueError("--train-only requires training.save_embeddings=true")
 
     out_dir = ensure_dir(os.path.join(cfg.output_dir, cfg.name))
     for sub in ("metrics", "predictions", "embeddings", "retrieval", "stats"):
@@ -62,18 +68,26 @@ def run_loso_contrastive(cfg: ExperimentConfig, train_only: bool = False) -> Dic
     rows: List[Dict] = []
     compute_stats: Optional[Dict] = None
     for fold in folds:
+        fa = prepare_fold(bundle, fold, cfg.preprocessing)
+        data_signature = None
+        if bundle.source_signature:
+            data_signature = hashlib.sha256(bundle.source_signature.encode()
+                + fold.train_idx.tobytes() + fold.test_idx.tobytes()).hexdigest()
         for seed in cfg.seeds:
-            seed_everything(seed)
+            seed_everything(seed, deterministic_torch=cfg.training.deterministic)
             log.info("=== Fold %d | test=%s | seed=%d ===",
                      fold.fold_index, fold.test_subject, seed)
-
-            fa = prepare_fold(bundle, fold, cfg.preprocessing)
 
             # --- encoder training (timed, peak RAM + VRAM) ----------------- #
             with ResourceTracker(track_vram=True) as rt_train:
                 model = _engine.train_contrastive_encoder(
-                    fa.x_train, fa.y_train, bundle.layout, cfg, seed=seed
+                    fa.x_train, fa.y_train, bundle.layout, cfg, seed=seed,
+                    checkpoint_path=os.path.join(out_dir, "checkpoints",
+                                                 f"{fold.test_subject}_seed{seed}.pt"),
+                    data_signature=data_signature,
                 )
+            save_json(model.training_profile, os.path.join(
+                out_dir, "metrics", f"{fold.test_subject}_seed{seed}_training.json"))
             # param count + FLOPs (constant across folds; compute once)
             if compute_stats is None:
                 compute_stats = _engine.model_compute_stats(
@@ -107,13 +121,14 @@ def run_loso_contrastive(cfg: ExperimentConfig, train_only: bool = False) -> Dic
             )
 
             # save embeddings (so retrieval can be re-swept without retraining)
-            np.savez_compressed(
-                os.path.join(out_dir, "embeddings", f"{fold.test_subject}_seed{seed}.npz"),
-                train_emb=train_emb, test_emb=test_emb,
-                train_labels=fa.y_train, test_labels=fa.y_test,
-                train_subjects=bundle.subjects[fold.train_idx],
-                test_subjects=bundle.subjects[fold.test_idx],
-            )
+            if cfg.training.save_embeddings:
+                np.savez_compressed(
+                    os.path.join(out_dir, "embeddings", f"{fold.test_subject}_seed{seed}.npz"),
+                    train_emb=to_host(train_emb), test_emb=to_host(test_emb),
+                    train_labels=fa.y_train, test_labels=fa.y_test,
+                    train_subjects=bundle.subjects[fold.train_idx],
+                    test_subjects=bundle.subjects[fold.test_idx],
+                )
 
             if train_only:
                 log.info("--train-only: skipping retrieval eval for fold %s seed %d",
@@ -139,6 +154,8 @@ def run_loso_contrastive(cfg: ExperimentConfig, train_only: bool = False) -> Dic
                        "head": head, "model": f"contrastive_{cfg.loss.name}_{head}"}
                 row.update({k: metrics.get(k) for k in METRIC_KEYS})
                 rows.append(row)
+            del model, train_emb, test_emb, linear_clf
+        del fa
 
     # Total training time across folds (printed for the "per-fold and total"
     # requirement); per-fold rows already live in runtime.csv.
